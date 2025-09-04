@@ -1,7 +1,6 @@
 # main.py
 
-# --- ⚙️ 설치 필요 패키지 ---
-# pip install fastapi "uvicorn[standard]" python-dotenv python-multipart tensorflow opencv-python numpy torch kobert-tokenizer scikit-learn pandas transformers langchain langchain-openai langchainA_community openai datasets chromadb tiktoken
+# pip install fastapi "uvicorn[standard]" python-multipart tensorflow numpy opencv-python Pillow transformers sentencepiece openai
 
 import os
 from dotenv import load_dotenv
@@ -15,11 +14,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
+from typing import List, Optional, Any, Dict
 
 # --- 각 모듈에서 분석 함수들을 가져옴 ---
 from CNN import analyze_doodle_cnn
 from koBERT_model import analyze_emotion, initialize_model as initialize_kobert, DiaryRequest
-from LLM_RAG import chat_with_rag
+from LLM_RAG import chat_with_rag, chat_with_rag_for_chat
+
 
 # --- AI 모델들을 저장할 변수 ---
 models = {}
@@ -53,7 +55,7 @@ def read_root():
     """서버 상태를 확인하는 기본 경로"""
     return {"status": "Inner Canvas AI 서버가 실행 중입니다."}
 
-@app.post("/analyze_diary/")
+@app.post("/analyze/diary/")
 async def analyze_diary_endpoint(
     text: str = Form(...),
     file: UploadFile = File(...)
@@ -97,8 +99,99 @@ async def analyze_diary_endpoint(
         return JSONResponse(content=final_response)
 
     except Exception as e:
+        print("DEBUG ERROR:", str(e))
         # 예기치 못한 에러 처리
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+# ==========================================
+# Request/Response 모델 정의
+# ==========================================
+class ChatHistoryItem(BaseModel):
+    chatId: Optional[int] = None
+    sender: Optional[str] = None
+    message: Optional[str] = None
+    createdAt: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    diaryId: Optional[int] = None
+    message: Optional[str] = None
+    currentChatHistory: Optional[List[ChatHistoryItem]] = None
+    past7DaysHistory: Optional[str] = None  # JSON 문자열 형태로 스프링에서 전달됨
+
+
+class ChatResponse(BaseModel):
+    message: Optional[str] = None
+
+# ==========================================
+# 회원용 채팅 API (/analyze/chat)
+# ==========================================
+@app.post("/analyze/chat", response_model=ChatResponse)
+async def analyze_chat(request: ChatRequest):
+    """
+    스프링부트에서 전달된 현재 대화 기록 + 과거 7일치 로그를 활용하여
+    LLM + RAG 기반 상담 답변을 생성하는 엔드포인트
+    """
+    try:
+        # --- 입력값 확인 ---
+        if not request.message:
+            raise HTTPException(status_code=400, detail="message 필드는 비워둘 수 없습니다.")
+
+        # --- RAG에 넘길 컨텍스트 준비 ---
+        rag_context = {
+            "diaryId": request.diaryId,
+            "current_chat_history": [chat.dict() for chat in request.currentChatHistory] if request.currentChatHistory else [],
+            "past_7days_history": request.past7DaysHistory
+        }
+
+        # --- LLM + RAG를 통해 상담 답변 생성 ---
+        ai_response, debug_info = chat_with_rag_for_chat(
+            user_text=request.message,
+            context=rag_context
+        )
+
+        return JSONResponse(content={"message": ai_response})
+
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        print("DEBUG ERROR:", str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+# ==========================================
+# 비회원용 채팅 API (/analyze/chat/guest)
+# ==========================================
+class GuestChatRequest(BaseModel):
+    message: Optional[str] = None
+    currentChatHistory: Optional[List[ChatHistoryItem]] = None
+
+
+@app.post("/analyze/chat/guest", response_model=ChatResponse)
+async def analyze_chat_guest(request: GuestChatRequest):
+    """
+    비회원의 경우, 과거 로그 없이 현재 대화만 기반으로 AI 답변을 생성
+    """
+    try:
+        if not request.message:
+            raise HTTPException(status_code=400, detail="message 필드는 비워둘 수 없습니다.")
+
+        rag_context = {
+            "current_chat_history": [chat.dict() for chat in request.currentChatHistory] if request.currentChatHistory else []
+        }
+
+        # RAG를 호출하되 비회원 모드로 실행
+        ai_response, debug_info = chat_with_rag_for_chat(
+            user_text=request.message,
+            context=rag_context
+        )
+
+        return JSONResponse(content={"message": ai_response})
+
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        print("DEBUG ERROR:", str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
 # --- 서버 직접 실행을 위한 부분 ---
