@@ -27,6 +27,7 @@ class DiaryRequest(BaseModel):
 
 class EmotionResponse(BaseModel):
     emotion_type: str
+    main_emotion: str
 
 # -----------------------------
 # 호출 시 초기화되는 함수
@@ -51,7 +52,6 @@ def initialize_model(model_path="bert_emotion_weights.pt",
             label_dict[code] = {"sub": sub, "main": main}
 
     code_to_idx = {code: idx for idx, code in enumerate(label_dict.keys())}
-    idx_to_code = {v: k for k, v in code_to_idx.items()}
     LABELS = list(code_to_idx.keys())
 
     # 모델 로드
@@ -65,15 +65,16 @@ def initialize_model(model_path="bert_emotion_weights.pt",
     # 토크나이저
     tokenizer = KoBERTTokenizer.from_pretrained("skt/kobert-base-v1")
 
-    return model, tokenizer, device, LABELS
+    return model, tokenizer, device, LABELS, label_dict
 
 # -----------------------------
 # 감정 분석 함수
 # -----------------------------
-def analyze_emotion(request: DiaryRequest, model=None, tokenizer=None, device=None, LABELS=None):
-    # 모델이 초기화되지 않았다면 초기화
-    if model is None or tokenizer is None or device is None or LABELS is None:
-        model, tokenizer, device, LABELS = initialize_model()
+# <<< 수정된 부분: analyze_emotion 함수가 label_dict를 인자로 받도록 수정
+def analyze_emotion(request: DiaryRequest, model=None, tokenizer=None, device=None, LABELS=None, label_dict=None):
+    # 모델 등이 초기화되지 않았다면 초기화
+    if model is None or tokenizer is None or device is None or LABELS is None or label_dict is None:
+        model, tokenizer, device, LABELS, label_dict = initialize_model()
 
     text = request.text
     inputs = tokenizer(text, return_tensors="pt", padding="max_length",
@@ -84,5 +85,7 @@ def analyze_emotion(request: DiaryRequest, model=None, tokenizer=None, device=No
         logits = model(inputs["input_ids"], inputs["token_type_ids"], inputs["attention_mask"])
         pred_id = torch.argmax(logits, dim=-1).item()
         pred_label = LABELS[pred_id]
+        
+    main_emotion = label_dict.get(pred_label, {}).get("main", "알 수 없음")
 
-    return {"emotion_type": pred_label}
+    return {"emotion_type": pred_label, "main_emotion": main_emotion}

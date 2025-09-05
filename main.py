@@ -1,5 +1,3 @@
-# main.py
-
 # pip install fastapi "uvicorn[standard]" python-multipart tensorflow numpy opencv-python Pillow transformers sentencepiece openai
 
 import os
@@ -33,12 +31,13 @@ async def lifespan(app: FastAPI):
     서버가 시작될 때 AI 모델들을 미리 로딩하여 API 응답 속도를 향상시킵니다.
     """
     print("🚀 서버 시작! AI 모델을 로딩합니다...")
-    # KoBERT 모델 로딩
-    kobert_model, tokenizer, device, labels = initialize_kobert()
+    # KoBERT 모델 로딩 시 5개의 반환값을 모두 받도록 수정
+    kobert_model, tokenizer, device, labels, label_dict = initialize_kobert()
     models["kobert_model"] = kobert_model
     models["tokenizer"] = tokenizer
     models["device"] = device
     models["LABELS"] = labels
+    models["label_dict"] = label_dict # label_dict도 저장
     print("✅ [KoBERT] 모델 로딩 성공!")
     # CNN 모델은 cnn.py를 import할 때 자동으로 로딩됩니다.
     # LLM 관련 설정은 llm_rag.py를 import할 때 자동으로 처리됩니다.
@@ -77,7 +76,8 @@ async def analyze_diary_endpoint(
             model=models["kobert_model"],
             tokenizer=models["tokenizer"],
             device=models["device"],
-            LABELS=models["LABELS"]
+            LABELS=models["LABELS"],
+            label_dict=models["label_dict"] # label_dict 전달
         )
         if "error" in kobert_result:
             raise HTTPException(status_code=500, detail=kobert_result["error"])
@@ -93,9 +93,13 @@ async def analyze_diary_endpoint(
             "counseling_response": final_answer,
             "analysis_details": {
                 "doodle_prediction": cnn_result,
-                "text_emotion": kobert_result,
-            }
+                "text_emotion": kobert_result, # 결과에 emotion_type과 main_emotion 모두 포함
+            },
+            # 최상위 레벨에 main_emotion 추가
+            "main_emotion": kobert_result.get("main_emotion")
         }
+        
+        print(final_response)
         return JSONResponse(content=final_response)
 
     except Exception as e:
@@ -204,3 +208,4 @@ if __name__ == "__main__":
     
     # Uvicorn 서버 실행
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
