@@ -1,3 +1,5 @@
+# main.py
+
 # pip install fastapi "uvicorn[standard]" python-multipart tensorflow numpy opencv-python Pillow transformers sentencepiece openai
 
 import os
@@ -57,9 +59,15 @@ def read_root():
 @app.post("/analyze/diary/")
 async def analyze_diary_endpoint(
     text: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    username: str = Form(None)
 ):
     """사용자의 일기(텍스트+그림)를 받아 종합적으로 분석하고 상담 답변을 반환하는 메인 API"""
+    print("""
+          ================================
+          초기 분석 파이썬 로직을 실행합니다.
+          ================================
+          """)
     try:
         # 1. 이미지 파일 읽기
         image_bytes = await file.read()
@@ -86,7 +94,7 @@ async def analyze_diary_endpoint(
         # llm_rag.py의 함수 형식에 맞게 kobert 결과를 임시 변환
         temp_kobert_for_rag = {"sentiment": kobert_result.get("emotion_type"), "score": 1.0} 
         
-        final_answer, _ = chat_with_rag(text, cnn_result, temp_kobert_for_rag)
+        final_answer, _ = chat_with_rag(text, cnn_result, temp_kobert_for_rag, username)
 
         # 5. 최종 결과 종합 및 응답
         final_response = {
@@ -112,6 +120,8 @@ async def analyze_diary_endpoint(
 # ==========================================
 class ChatHistoryItem(BaseModel):
     chatId: Optional[int] = None
+    diaryId: Optional[int] = None
+    username: Optional[str] = None
     sender: Optional[str] = None
     message: Optional[str] = None
     createdAt: Optional[str] = None
@@ -120,6 +130,7 @@ class ChatHistoryItem(BaseModel):
 class ChatRequest(BaseModel):
     diaryId: Optional[int] = None
     message: Optional[str] = None
+    username: Optional[str] = None
     currentChatHistory: Optional[List[ChatHistoryItem]] = None
     past7DaysHistory: Optional[str] = None  # JSON 문자열 형태로 스프링에서 전달됨
 
@@ -136,6 +147,11 @@ async def analyze_chat(request: ChatRequest):
     스프링부트에서 전달된 현재 대화 기록 + 과거 7일치 로그를 활용하여
     LLM + RAG 기반 상담 답변을 생성하는 엔드포인트
     """
+    print("""
+          ================================
+          회원 채팅 파이썬 로직을 실행합니다.
+          ================================
+          """)
     try:
         # --- 입력값 확인 ---
         if not request.message:
@@ -151,7 +167,9 @@ async def analyze_chat(request: ChatRequest):
         # --- LLM + RAG를 통해 상담 답변 생성 ---
         ai_response, debug_info = chat_with_rag_for_chat(
             user_text=request.message,
-            context=rag_context
+            context=rag_context,
+            diaryId=request.diaryId,
+            username=request.username
         )
 
         return JSONResponse(content={"message": ai_response})
@@ -166,6 +184,7 @@ async def analyze_chat(request: ChatRequest):
 # 비회원용 채팅 API (/analyze/chat/guest)
 # ==========================================
 class GuestChatRequest(BaseModel):
+    diaryId: Optional[int] = None
     message: Optional[str] = None
     currentChatHistory: Optional[List[ChatHistoryItem]] = None
 
@@ -175,6 +194,11 @@ async def analyze_chat_guest(request: GuestChatRequest):
     """
     비회원의 경우, 과거 로그 없이 현재 대화만 기반으로 AI 답변을 생성
     """
+    print("""
+          ================================
+          비회원 채팅 파이썬 로직을 실행합니다.
+          ================================
+          """)
     try:
         if not request.message:
             raise HTTPException(status_code=400, detail="message 필드는 비워둘 수 없습니다.")
@@ -183,10 +207,15 @@ async def analyze_chat_guest(request: GuestChatRequest):
             "current_chat_history": [chat.dict() for chat in request.currentChatHistory] if request.currentChatHistory else []
         }
 
+        print('==========리퀘스트메세지===========')
+        print(request.message)
+        
         # RAG를 호출하되 비회원 모드로 실행
         ai_response, debug_info = chat_with_rag_for_chat(
             user_text=request.message,
-            context=rag_context
+            context=rag_context,
+            diaryId=request.diaryId,
+            username=""
         )
 
         return JSONResponse(content={"message": ai_response})
@@ -208,4 +237,3 @@ if __name__ == "__main__":
     
     # Uvicorn 서버 실행
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
