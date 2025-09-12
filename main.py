@@ -1,83 +1,77 @@
-# main.py
-
-# pip install fastapi "uvicorn[standard]" python-multipart tensorflow numpy opencv-python Pillow transformers sentencepiece openai
-
 import os
 from dotenv import load_dotenv
-
-# 🚀 애플리케이션의 가장 첫 단계에서 .env 파일을 로드합니다.
-load_dotenv()
-
-# Hugging Face Tokenizer의 병렬 처리 비활성화 (macOS, Windows 충돌 방지)
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from contextlib import asynccontextmanager
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
 
-# --- 각 모듈에서 분석 함수들을 가져옴 ---
+# --- Local Imports ---
 from CNN import analyze_doodle_cnn
 from koBERT_model import analyze_emotion, initialize_model as initialize_kobert, DiaryRequest
-from LLM_RAG import chat_with_rag, chat_with_rag_for_chat
+from LLM_RAG import start_new_counseling_session, continue_counseling_session
 
+# --- Application Setup ---
+load_dotenv()
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# --- AI 모델들을 저장할 변수 ---
 models = {}
 
-# --- FastAPI 앱 시작/종료 시 작업 처리 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    서버가 시작될 때 AI 모델들을 미리 로딩하여 API 응답 속도를 향상시킵니다.
-    """
+    """서버 시작 시 AI 모델을 미리 로드합니다."""
     print("🚀 서버 시작! AI 모델을 로딩합니다...")
-    # KoBERT 모델 로딩 시 5개의 반환값을 모두 받도록 수정
     kobert_model, tokenizer, device, labels, label_dict = initialize_kobert()
     models["kobert_model"] = kobert_model
     models["tokenizer"] = tokenizer
     models["device"] = device
     models["LABELS"] = labels
-    models["label_dict"] = label_dict # label_dict도 저장
+    models["label_dict"] = label_dict
     print("✅ [KoBERT] 모델 로딩 성공!")
-    # CNN 모델은 cnn.py를 import할 때 자동으로 로딩됩니다.
-    # LLM 관련 설정은 llm_rag.py를 import할 때 자동으로 처리됩니다.
     yield
-    # --- 서버 종료 시 실행될 코드 ---
     print("🌙 서버가 종료됩니다.")
     models.clear()
 
-# --- FastAPI 앱 생성 ---
 app = FastAPI(lifespan=lifespan)
 
+# --- Pydantic Models ---
+class ChatRequest(BaseModel):
+    diaryId: int
+    username: str
+    message: str
+
+class GuestChatRequest(BaseModel):
+    temp_username: str
+    message: str
+
+class ChatResponse(BaseModel):
+    message: str
+
+# --- API Endpoints ---
 @app.get("/")
 def read_root():
-    """서버 상태를 확인하는 기본 경로"""
+    """서버 상태를 확인하는 기본 경로입니다."""
     return {"status": "Inner Canvas AI 서버가 실행 중입니다."}
 
 @app.post("/analyze/diary/")
 async def analyze_diary_endpoint(
+    diary_id: int = Form(...),
+    username: Optional[str] = Form(None),
     text: str = Form(...),
-    file: UploadFile = File(...),
-    username: str = Form(None)
+    file: UploadFile = File(...)
 ):
-    """사용자의 일기(텍스트+그림)를 받아 종합적으로 분석하고 상담 답변을 반환하는 메인 API"""
-    print("""
-          ================================
-          초기 분석 파이썬 로직을 실행합니다.
-          ================================
-          """)
+    """일기(텍스트+그림)를 받아 종합 분석 후 첫 상담 답변을 반환하는 API입니다."""
     try:
-        # 1. 이미지 파일 읽기
         image_bytes = await file.read()
-
-        # 2. CNN으로 그림 분석
         cnn_result = analyze_doodle_cnn(image_bytes)
         if "error" in cnn_result:
             raise HTTPException(status_code=500, detail=cnn_result["error"])
+        print(f"cnn 분석 결과: {cnn_result}")
 
-        # 3. KoBERT로 텍스트 감정 분석 (미리 로딩된 모델 사용)
+        confidence_score = cnn_result.get("confidence", 0.0)
+        image_label = cnn_result.get("prediction") if confidence_score > 0.7 else "감정을 특정하기 어려운 그림"
+        
         kobert_request = DiaryRequest(text=text)
         kobert_result = analyze_emotion(
             request=kobert_request,
@@ -85,155 +79,69 @@ async def analyze_diary_endpoint(
             tokenizer=models["tokenizer"],
             device=models["device"],
             LABELS=models["LABELS"],
-            label_dict=models["label_dict"] # label_dict 전달
+            label_dict=models["label_dict"]
         )
         if "error" in kobert_result:
             raise HTTPException(status_code=500, detail=kobert_result["error"])
+        print(f"kobert 분석 결과: {kobert_result}")
         
-        # 4. LLM(RAG)으로 최종 상담 답변 생성
-        # llm_rag.py의 함수 형식에 맞게 kobert 결과를 임시 변환
-        temp_kobert_for_rag = {"sentiment": kobert_result.get("emotion_type"), "score": 1.0} 
+        initial_answer, temp_guest_id = start_new_counseling_session(
+            diary_id=diary_id,
+            username=username,
+            diary_text=text,
+            emotion_label=kobert_result.get("emotion_type"),
+            image_label=image_label
+        )
         
-        final_answer, _ = chat_with_rag(text, cnn_result, temp_kobert_for_rag, username)
-
-        # 5. 최종 결과 종합 및 응답
-        final_response = {
-            "counseling_response": final_answer,
-            "analysis_details": {
-                "doodle_prediction": cnn_result,
-                "text_emotion": kobert_result, # 결과에 emotion_type과 main_emotion 모두 포함
-            },
-            # 최상위 레벨에 main_emotion 추가
-            "main_emotion": kobert_result.get("main_emotion")
-        }
+        final_result = JSONResponse(content={
+            "counseling_response": initial_answer,
+            "main_emotion": kobert_result.get("main_emotion"),
+            "temp_guest_id": temp_guest_id
+        })
+        print(f"final_result: {final_result}")
         
-        print(final_response)
-        return JSONResponse(content=final_response)
+        return final_result
 
     except Exception as e:
-        print("DEBUG ERROR:", str(e))
-        # 예기치 못한 에러 처리
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-# ==========================================
-# Request/Response 모델 정의
-# ==========================================
-class ChatHistoryItem(BaseModel):
-    chatId: Optional[int] = None
-    diaryId: Optional[int] = None
-    username: Optional[str] = None
-    sender: Optional[str] = None
-    message: Optional[str] = None
-    createdAt: Optional[str] = None
-
-
-class ChatRequest(BaseModel):
-    diaryId: Optional[int] = None
-    message: Optional[str] = None
-    username: Optional[str] = None
-    currentChatHistory: Optional[List[ChatHistoryItem]] = None
-    past7DaysHistory: Optional[str] = None  # JSON 문자열 형태로 스프링에서 전달됨
-
-
-class ChatResponse(BaseModel):
-    message: Optional[str] = None
-
-# ==========================================
-# 회원용 채팅 API (/analyze/chat)
-# ==========================================
 @app.post("/analyze/chat", response_model=ChatResponse)
 async def analyze_chat(request: ChatRequest):
-    """
-    스프링부트에서 전달된 현재 대화 기록 + 과거 7일치 로그를 활용하여
-    LLM + RAG 기반 상담 답변을 생성하는 엔드포인트
-    """
-    print("""
-          ================================
-          회원 채팅 파이썬 로직을 실행합니다.
-          ================================
-          """)
+    """회원의 기존 대화를 이어가는 채팅 API입니다."""
     try:
-        # --- 입력값 확인 ---
-        if not request.message:
-            raise HTTPException(status_code=400, detail="message 필드는 비워둘 수 없습니다.")
+        if not all([request.message, request.username, request.diaryId is not None]):
+            raise HTTPException(status_code=400, detail="diaryId, username, message 필드는 필수입니다.")
 
-        # --- RAG에 넘길 컨텍스트 준비 ---
-        rag_context = {
-            "diaryId": request.diaryId,
-            "current_chat_history": [chat.dict() for chat in request.currentChatHistory] if request.currentChatHistory else [],
-            "past_7days_history": request.past7DaysHistory
-        }
-
-        # --- LLM + RAG를 통해 상담 답변 생성 ---
-        ai_response, debug_info = chat_with_rag_for_chat(
-            user_text=request.message,
-            context=rag_context,
-            diaryId=request.diaryId,
-            username=request.username
+        ai_response = continue_counseling_session(
+            diary_id=request.diaryId,
+            username=request.username,
+            user_message=request.message,
         )
-
         return JSONResponse(content={"message": ai_response})
 
-    except HTTPException as http_ex:
-        raise http_ex
     except Exception as e:
-        print("DEBUG ERROR:", str(e))
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-# ==========================================
-# 비회원용 채팅 API (/analyze/chat/guest)
-# ==========================================
-class GuestChatRequest(BaseModel):
-    diaryId: Optional[int] = None
-    message: Optional[str] = None
-    currentChatHistory: Optional[List[ChatHistoryItem]] = None
-
 
 @app.post("/analyze/chat/guest", response_model=ChatResponse)
 async def analyze_chat_guest(request: GuestChatRequest):
-    """
-    비회원의 경우, 과거 로그 없이 현재 대화만 기반으로 AI 답변을 생성
-    """
-    print("""
-          ================================
-          비회원 채팅 파이썬 로직을 실행합니다.
-          ================================
-          """)
+    """비회원의 기존 대화를 이어가는 채팅 API입니다."""
     try:
-        if not request.message:
-            raise HTTPException(status_code=400, detail="message 필드는 비워둘 수 없습니다.")
+        if not all([request.message, request.temp_username]):
+            raise HTTPException(status_code=400, detail="temp_username, message 필드는 필수입니다.")
 
-        rag_context = {
-            "current_chat_history": [chat.dict() for chat in request.currentChatHistory] if request.currentChatHistory else []
-        }
-
-        print('==========리퀘스트메세지===========')
-        print(request.message)
-        
-        # RAG를 호출하되 비회원 모드로 실행
-        ai_response, debug_info = chat_with_rag_for_chat(
-            user_text=request.message,
-            context=rag_context,
-            diaryId=request.diaryId,
-            username=""
+        ai_response = continue_counseling_session(
+            diary_id=-1,
+            username=request.temp_username,
+            user_message=request.message,
         )
-
         return JSONResponse(content={"message": ai_response})
-
-    except HTTPException as http_ex:
-        raise http_ex
+        
     except Exception as e:
-        print("DEBUG ERROR:", str(e))
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-
-# --- 서버 직접 실행을 위한 부분 ---
+# --- Server Execution ---
 if __name__ == "__main__":
-    import multiprocessing
     import uvicorn
-
-    # Windows나 macOS에서 멀티프로세싱 충돌을 방지하기 위한 설정
+    import multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
-    
-    # Uvicorn 서버 실행
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

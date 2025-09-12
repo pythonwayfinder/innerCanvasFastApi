@@ -17,8 +17,10 @@ opencv-python-headless
 #LangChain & OpenAI
 langchain
 langchain-openai
+langchain-chroma
 langchain-community
-openai
-datasets
-chromadb
+python-dotenv
 tiktoken
+duckduckgo-search
+chromadb
+beautifulsoup4

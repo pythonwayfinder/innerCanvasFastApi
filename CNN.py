@@ -66,7 +66,7 @@ preprocess_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-def preprocess_image_pytorch(image_bytes: bytes) -> torch.Tensor:
+def preprocess_image_pytorch(image_bytes: bytes) -> torch.Tensor:   
     """이미지 바이트를 PyTorch MobileNetV2 모델 입력에 맞게 전처리합니다."""
     # 1. 이미지 바이트를 OpenCV 이미지로 디코딩합니다. (TensorFlow 코드와 동일)
     nparr = np.frombuffer(image_bytes, np.uint8)

@@ -86,6 +86,9 @@ def analyze_emotion(request: DiaryRequest, model=None, tokenizer=None, device=No
         pred_id = torch.argmax(logits, dim=-1).item()
         pred_label = LABELS[pred_id]
         
-    main_emotion = label_dict.get(pred_label, {}).get("main", "알 수 없음")
+    emotion_info = label_dict.get(pred_label, {"sub": "알 수 없음", "main": "알 수 없음"})
+    sub_emotion = emotion_info.get("sub")
+    main_emotion = emotion_info.get("main")
 
-    return {"emotion_type": pred_label, "main_emotion": main_emotion}
+    # emotion_type에 코드 대신 소분류(sub_emotion)를 반환
+    return {"emotion_type": sub_emotion, "main_emotion": main_emotion}
